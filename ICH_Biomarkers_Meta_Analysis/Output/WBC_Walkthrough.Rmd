@@ -1,0 +1,365 @@
+---
+title: "WBC Walkthrough"
+author: "Jack Barrington"
+date: "`r format(Sys.time(), '%a %d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: readable
+    toc_float: true
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input,
+      output_dir = here::here("Output"),
+      output_file = "WBC",
+      envir = globalenv()
+    )
+  })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Intro
+
+This is a brief walkthrough of the r code that was used to analyse the data in our systematic review looking at associations between inflammatory biomarkers and outcome in intracerebral haemorrhage.
+
+All credit for design and implementation of the systematic review goes to the brilliance of first author (Caoimhe) and last author (Neshika).
+
+I am publishing this code for absolute transparency of our project and in case it helps other MA noobs (like myself) run through an MA for the first time.
+
+I have used the metafor package to perform this meta-analysis and everything you would want to know about metafor is provided in a very clear and concise way on the associated website: https://www.metafor-project.org/doku.php/metafor
+
+
+Here we go. First up, the packages that you will need for this project.
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+# Loading required packages 
+library(here)
+library(tidyverse)
+library(metafor)
+library(kableExtra)
+
+```
+
+## Data Table
+
+Next comes the table containing all of the data we extracted for studies measuring WBC and outcome.
+
+N.B. you can just change the filtering strategy in the code below to any of the biomarkers we measured!
+
+I have provided the data in a clean_data RDS file but it originally came from a messy excel spreadsheet. If you would like to have a go at cleaning a messy excel sheet or critiquing my (quite poor) data wrangling code then let me know!
+```{r, echo = FALSE}
+# Load data
+clean_dat<-readRDS(here::here("Input", "Clean_data.rds"))
+
+# Extract WBC data and generate study id label
+dat<-clean_dat %>% 
+  filter(str_detect(biomarker_units, "WBC|Leuk")) %>% # change the WBC|Leuk to analyse different biomarkers
+  mutate(study_id = 1:length(author), .before = author)
+
+# Create table of clean data
+dat %>%
+  kbl(col.names = str_to_sentence(gsub("[_]", " ", names(dat))), digits = 3) %>% 
+  kable_styling(bootstrap_options = c("striped","condensed"), full_width = F) %>% 
+  kable_classic(position = 'center')
+
+# Arrange the studies into the correct order
+dat<-dat %>%
+  arrange(desc(subgroup),year,author) %>% 
+  mutate(study_order = 1:length(study_id))
+
+```
+## Meta-analysis {.tabset}
+
+Time for the exciting part. It is crazy to think how much work went in to this project up to this point (generate a search strategy, identify studies, filter them, and extract the data) just so us number nerds can do the fun stuff.
+
+
+### Summary statistics
+
+Here we are going to run a random-effects MA, but first we will generate a QQ plot to check our data come from a (roughly) normal distribution.
+
+The QQ plot takes our data, arranges it into a ranked order and plots it against a theoretical distribution.
+The qqnorm function plots a normal theoretical distribution on the x axis and our data on the y axis. Therefore, if our data is normally distributed it should correlate with the theoretical normal distribution and sit around the y = x line.
+
+A much nicer explanation of qqplots can be found here: https://data.library.virginia.edu/understanding-q-q-plots/
+
+```{r, echo = FALSE}
+# Calculate effect sizes and outcome measures
+dat <- escalc(measure = "SMD", n1i = n_in_poor, n2i = n_in_good, m1i = mean_in_poor, m2i = mean_in_good,
+              sd1i = sd_in_poor, sd2i = sd_in_good, data=dat, slab=paste(author, year, sep=" et al., "))
+
+
+# Run the model
+res <- rma(yi, vi, data=dat) 
+
+# Draw QQ plot
+qqnorm(res)
+
+# Recall
+res
+
+# Pull confidence intervals
+confint(res) 
+
+```
+### Forest plot
+
+Next we will generate the Forest plot (cooler name: blobbogram) that provides a graphical summary of our MA. We should have studies arranged in rows (in order of Year > Author) along with their SMD (squares) and CI.
+
+The size of the square represents the weight of the study on the overall estimates. (i.e. studies with more precise measures - think smaller standard errors of the mean = greater weight - have a greater influence on the summary estimates)
+
+We will visualise the summary estimates from the random-effects MA as a diamond just above the x axis. The edges of the diamond are the CIs so if the diamond does not cross the 0 line we have a significant association.
+
+I have also written some code to add the heterogeneity and summary p vals to the bottom of the graph (I wrote this before I realised the metafor website has all the answers to life's problems so it may not be as neat as it could be)
+```{r,echo=FALSE}
+forest(res, xlim = c(-9, 8), # set x limits
+       ilab = cbind(dat$n, dat$n_in_poor), # create sample number columns
+       ilab.xpos = c(-3.5, -2.5), cex = 0.75, # set placeholder for sample number columns
+       main = "WBC and 90-day mRS", # title of the graph
+       order = dat$year,
+       showweights = T) # add weights column
+op <- par(cex = 0.8, font = 2) # Format text
+text(c(-3.5, -2), 14.55, c("N", "n (poor)")) # add column labels for sample numbers
+text(-9, 14.55, "Author(s), Year", pos=4) # add title for author/year column
+text( 8, 14.55, "SMD [95% CI]", pos=2) # add title for SMD
+text( 5.15, 14.55, "Weight", pos = 2) # add title for weight values
+text(-4.5, -0.55, "Heterogeneity") # add heterogeneity title before placing values underneath
+text(-4.5, -1.5, bquote(paste(I^2 , " = ", .(format(res[["I2"]], digits = 2)), 
+                               ", ",
+                           tau^2, " = ", .(format(res[["tau2"]], digits = 2)),
+                           ", ",
+                           italic("p"), " = ", .(format(res[["QEp"]], digits = 2)))))
+text(5.5, -1.8, bquote(paste(bold("Overall effect; "), italic(p), " = ",
+                           .(format(res[["pval"]], digits = 2))))) # add title and pvalue to overall effect
+
+par(op) # recall text format
+```
+
+
+## Sensitivity analysis: {.tabset}
+
+In this part of the analysis we will work out how robust our model is to potential outliers.
+You will be unable to run some of this analysis when study numbers are low. So clearly, any MA composed of low numbers of studies needs to be interpreted with caution.
+
+### Identifying potential outliers
+
+First up is a Baujat plot identifying studies that heavily contribute to the overall heterogeneity. The studies in the top right quadrant have the most influence on the model, but this is not to say they are statistical outliers.
+
+Ref: Baujat, B., Mahé, C., Pignon, J.-P., & Hill, C. (2002). A graphical method for exploring heterogeneity in meta-analyses: Application to a meta-analysis of 65 trials. Statistics in Medicine, 21(18), 2641–2652.
+
+```{r, echo=FALSE}
+baujat(res)
+```
+
+### Outlier plots
+
+Here are several measures to identify potential outliers (cook's D is potentially easiest to interpret as any outlier would be 2 SD away from the center line).
+
+Any study that meets outlier cutoffs will be marked in the inf column of the data table.
+
+Before removing an outlier from the model, first learn more about the study to ascertain why it might be acting as an outlier (e.g. are any of the covariates uniquely different or is the study design/population different to the rest) - this might reveal some insight into factors driving heterogeneity.
+
+More information on these plots can be found at : https://www.metafor-project.org/doku.php/plots:plot_of_influence_diagnostics
+
+```{r,echo=FALSE}
+
+inf <- influence(res)
+print(inf)
+plot(inf)
+```
+
+
+### Leave one out
+
+Now we will repeat the MA but remove a single study each time to determine if our summary estimates are reliant on one study. 
+N.B. Pay special attention to any studies highlighted in the previous plots.
+
+```{r, echo=FALSE}
+leave1out(res, digits = 3)
+
+```
+## Publication bias assessment {.tabset}
+
+Now we will check to see if there is any evidence of publication bias in our review of the literature.
+
+### Funnel plot
+
+First up is a funnel plot that many use to visually guide analysis of publication bias. 
+In this plot our individual study SMD is plotted on the x axis against the standard error on the y axis. A line is drawn on the summary estimate SMD and asymmetry around this point (vertical dotted line) could indicate a bias in the type of associations reported because there is a relationship between the effect size and precision reported in the literature.
+
+Here is a better guide to interpreting funnel plots: https://www.bmj.com/content/343/bmj.d4002
+
+
+```{r, echo=FALSE}
+# Looking for evidence of publication bias
+funnel(res, xlab = "Standardised Mean Difference")
+```
+
+### Egger's regression test for funnel plot asymmetry
+
+Here we will use a test devised by Egger et al. (1997) to check for statistically defined asymmetry in the previous funnel plot. 
+
+Egger's test works by regressing the [observed effect sizes divided by their standard error] (y) (essentially z-scores of the effect sizes) against the [inverse of the studies standard error] (x) (equivalent to the precision).
+
+y = B0 + B1x
+
+Egger's test focuses on B0 to test whether the intercept of our regression significantly deviates from 0.
+
+The intercept is the value of y when predictors are 0 (when standard error is infinitely large). Therefore, we should get a big spread of datapoints around  0 at the intercept because confidence intervals should be extremely large (thus making it nigh on impossible to find significant results - z value > 1.96). If there is small study bias we would expect over-representation of significant studies here (z > 1.96) pulling the intercept away from 0.
+
+I tried to explain that after digesting it but if it doesn't make sense you can find a much better explanation here:
+https://bookdown.org/MathiasHarrer/Doing_Meta_Analysis_in_R/pub-bias.html
+
+Ref for the test: https://pubmed.ncbi.nlm.nih.gov/9310563/
+
+
+```{r,echo=FALSE, eval=FALSE, include=FALSE}
+# Performing tests for publication bias
+regtest(res)
+```
+## Moderators {.tabset}
+
+In this section we will test if pre-defined study-level variates explain some of the heterogeneity in our random-effects MA by including them as moderators in the equation.
+
+
+I have also included graphs of (1) a linear regression of the moderator against the SMD with the size of the points reflective of the study's precision (graphically evaluate influence of single studies). (2) qqnorm graphs explained earlier. (3) model residuals vs fitted values to check that the data are homoskedastic.
+
+### Testing for the effect of cohort age
+
+
+```{r echo=FALSE, warning=FALSE}
+# function to build predictor graphs
+plot_predictor<- function(data,predictor){
+  data %>% 
+    ggplot(aes(x = {{predictor}}, y = yi)) +
+    geom_point(aes(size = 1/vi), show.legend = F) +
+    geom_smooth(method = 'lm')+
+    theme_classic()
+}
+
+
+# Plot linear regression of predictor against SMD
+dat %>% 
+  plot_predictor(age)+
+  labs(x = "Age", y = "Standardised Mean Difference")
+
+# Run rma with age as mod
+res.age <- rma(yi, vi, mods = ~ age, data=dat) 
+res.age 
+
+qqnorm(res.age)
+plot(resid(res.age) ~ fitted(res.age))
+
+```
+
+### Testing for the effect of cohort ICH vol
+
+```{r echo=FALSE, warning=FALSE}
+
+dat %>% 
+  plot_predictor(ich_vol)+
+  labs(x = "ICH Volume", y = "Standardised Mean Difference")
+
+res.vol <- rma(yi, vi, mods = ~ ich_vol, data=dat) 
+res.vol
+
+qqnorm(res.vol)
+plot(resid(res.vol) ~ fitted(res.vol))
+```
+
+## Subgroup Analysis {.tabset}
+
+In this section we will dichotomise our studies into high quality (risk of bias < 2) and low quality (risk of bias > 1) and perform a metaregression to determine if study quality affected summary estimates.
+
+### Risk of Bias summary
+
+```{r echo=FALSE}
+
+### fit random-effects model in the two subgroups
+res.l <- rma(yi, vi, subset=(subgroup=="Low Quality"), data=dat)
+res.h <- rma(yi, vi, subset=(subgroup=="High Quality"), data=dat)
+
+### fit meta-regression model to test for subgroup differences
+res_mod <- rma(yi, vi, mods = ~ subgroup, data=dat)
+
+qqnorm(res_mod)
+summary(res_mod)
+```
+
+
+
+### Subgroup Forest plot
+
+Now we will generate a forest plot containing our dichotomised studies and the relevant summary estimates.
+
+```{r echo=FALSE}
+# This part of the code was taken from the metafor-project website:
+# https://www.metafor-project.org/doku.php/plots:forest_plot_with_subgroups
+
+### a little helper function to add Q-test, I^2, and tau^2 estimate info
+mlabfun <- function(text, res) {
+   list(bquote(paste(.(text),
+      " (Q = ", .(formatC(res$QE, digits=2, format="f")),
+      ", df = ", .(res$k - res$p),
+      ", p ", .(metafor:::.pval(res$QEp, digits=2, showeq=TRUE, sep=" ")), "; ",
+      I^2, " = ", .(formatC(res$I2, digits=1, format="f")), "%, ",
+      tau^2, " = ", .(formatC(res$tau2, digits=2, format="f")), ")")))}
+ 
+### set up forest plot (with 2x2 table counts added; the 'rows' argument is
+### used to specify in which rows the outcomes will be plotted)
+forest(res, xlim=c(-16, 6.5),
+       ilab=cbind(dat$n, dat$n_in_poor),
+       ilab.xpos=c(-7.5,-6), cex=0.75, ylim=c(-2, 22),
+       order=rev(dat$study_order), rows=c(3:11,15:18),
+       main = "WBC and 90-day mRS",
+       mlab=mlabfun("RE Model for All Studies", res),
+       psize=1, header="Author(s) and Year")
+ 
+### set font expansion factor (as in forest() above) and use a bold font
+op <- par(cex=0.75, font=2)
+ 
+### add additional column headings to the plot
+text(c(-7.5,-6), 21, c("N", "n (poor)"))
+ 
+### switch to bold italic font
+par(font=4)
+ 
+### add text for the subgroups
+text(-16, c(12,19), pos=4, c("High Quality",
+                               "Low Quality"))
+ 
+### set par back to the original settings
+par(op)
+ 
+ 
+### add summary polygons for the two subgroups
+addpoly(res.l, row=13.5,cex = 0.75, mlab=mlabfun("RE Model for Subgroup", res.l))
+addpoly(res.h, row= 1.5,cex = 0.75, mlab=mlabfun("RE Model for Subgroup", res.h))
+ 
+ 
+### add text for the test of subgroup differences
+text(-16, -2.5, pos=4, cex=0.75, bquote(paste("Test for Subgroup Differences: ",
+     Q[M], " = ", .(formatC(res_mod$QM, digits=2, format="f")), ", df = ", .(res_mod$p - 1),
+     ", p = ", .(formatC(res_mod$QMp, digits=2, format="f")))))
+
+### add pvalues for each of the summary effects
+text(5.25, 12.5, cex = 0.75, bquote(paste(italic(p), " = ",
+                           .(format(res.l[["pval"]], digits = 2)))))
+
+text(5.25, 0.5, cex = 0.75, bquote(paste(italic(p), " = ",
+                           .(format(res.h[["pval"]], digits = 2)))))
+
+text(3.75, -2.3, cex = 0.75, bquote(paste(bold("Overall effect; "), italic(p), " = ",
+                           .(format(res[["pval"]], digits = 2)))))
+
+```
+
+## Session info {.tabset}
+
+```{r}
+sessionInfo()
+```
+
